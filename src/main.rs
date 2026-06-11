@@ -22,8 +22,7 @@ struct Config {
     dll_names: Vec<String>,
 }
 
-fn parse_args() -> anyhow::Result<Config> {
-    let args: Vec<String> = env::args().collect();
+fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     if args.len() < 2 {
         anyhow::bail!("用法: dll [选项] <name.dll> [name.dll ...]");
     }
@@ -52,6 +51,11 @@ fn parse_args() -> anyhow::Result<Config> {
     }
 
     Ok(Config { force, dll_names })
+}
+
+fn parse_args() -> anyhow::Result<Config> {
+    let args: Vec<String> = env::args().collect();
+    parse_args_from(&args)
 }
 
 #[derive(Clone, Copy)]
@@ -283,4 +287,148 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- parse_args_from ----
+
+    #[test]
+    fn parse_single_dll() {
+        let args = &["dll".to_string(), "dxgi.dll".to_string()];
+        let cfg = parse_args_from(args).unwrap();
+        assert!(!cfg.force);
+        assert_eq!(cfg.dll_names, vec!["dxgi.dll"]);
+    }
+
+    #[test]
+    fn parse_multiple_dlls() {
+        let args = &[
+            "dll".to_string(),
+            "dxgi.dll".to_string(),
+            "d3dcompiler.dll".to_string(),
+        ];
+        let cfg = parse_args_from(args).unwrap();
+        assert!(!cfg.force);
+        assert_eq!(cfg.dll_names, vec!["dxgi.dll", "d3dcompiler.dll"]);
+    }
+
+    #[test]
+    fn parse_force_flag() {
+        let args = &["dll".to_string(), "-f".to_string(), "dxgi.dll".to_string()];
+        let cfg = parse_args_from(args).unwrap();
+        assert!(cfg.force);
+        assert_eq!(cfg.dll_names, vec!["dxgi.dll"]);
+    }
+
+    #[test]
+    fn parse_force_long_flag() {
+        let args = &[
+            "dll".to_string(),
+            "--force".to_string(),
+            "dxgi.dll".to_string(),
+        ];
+        let cfg = parse_args_from(args).unwrap();
+        assert!(cfg.force);
+        assert_eq!(cfg.dll_names, vec!["dxgi.dll"]);
+    }
+
+    #[test]
+    fn parse_no_args() {
+        let args = &["dll".to_string()];
+        assert!(parse_args_from(args).is_err());
+    }
+
+    #[test]
+    fn parse_no_dll_extension() {
+        let args = &["dll".to_string(), "dxgi".to_string()];
+        assert!(parse_args_from(args).is_err());
+    }
+
+    #[test]
+    fn parse_unknown_flag() {
+        let args = &["dll".to_string(), "--unknown".to_string(), "dxgi.dll".to_string()];
+        assert!(parse_args_from(args).is_err());
+    }
+
+    #[test]
+    fn parse_lowercases_name() {
+        let args = &["dll".to_string(), "DXGI.DLL".to_string()];
+        let cfg = parse_args_from(args).unwrap();
+        assert_eq!(cfg.dll_names, vec!["dxgi.dll"]);
+    }
+
+    #[test]
+    fn parse_force_between_dlls() {
+        let args = &[
+            "dll".to_string(),
+            "a.dll".to_string(),
+            "-f".to_string(),
+            "b.dll".to_string(),
+        ];
+        let cfg = parse_args_from(args).unwrap();
+        assert!(cfg.force);
+        assert_eq!(cfg.dll_names, vec!["a.dll", "b.dll"]);
+    }
+
+    // ---- Architecture ----
+
+    #[test]
+    fn arch_x32_name() {
+        assert_eq!(Architecture::X32.name(), "x86");
+    }
+
+    #[test]
+    fn arch_x64_name() {
+        assert_eq!(Architecture::X64.name(), "x64");
+    }
+
+    #[test]
+    fn arch_x32_system_path() {
+        assert_eq!(Architecture::X32.system_path(), r"C:\Windows\SysWOW64\");
+    }
+
+    #[test]
+    fn arch_x64_system_path() {
+        assert_eq!(Architecture::X64.system_path(), r"C:\Windows\System32\");
+    }
+
+    // ---- is_valid_pe ----
+
+    #[test]
+    fn pe_valid_mz_header() {
+        let dir = std::env::temp_dir().join("dll-rs-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test.dll");
+        std::fs::write(&path, b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00").unwrap();
+        assert!(is_valid_pe(path.to_str().unwrap()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pe_invalid_no_mz() {
+        let dir = std::env::temp_dir().join("dll-rs-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("notadll.dll");
+        std::fs::write(&path, b"\x00\x00\x00\x00").unwrap();
+        assert!(!is_valid_pe(path.to_str().unwrap()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pe_empty_file() {
+        let dir = std::env::temp_dir().join("dll-rs-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("empty.dll");
+        std::fs::write(&path, b"").unwrap();
+        assert!(!is_valid_pe(path.to_str().unwrap()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pe_nonexistent_file() {
+        assert!(!is_valid_pe(r"C:\dll-rs-test-nonexistent.dll"));
+    }
 }
