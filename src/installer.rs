@@ -92,12 +92,12 @@ pub fn restore_dll(backup_path: &Path, original_path: &str) -> anyhow::Result<()
 /// 尝试通过 `takeown` + `icacls` 获取文件所有权和写入权限（绕过 WRP）。
 fn try_take_ownership(path: &str) -> anyhow::Result<()> {
     Command::new("takeown")
-        .args(&["/f", path])
+        .args(["/f", path])
         .output()
         .context("takeown 执行失败")?;
     let user = std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string());
     Command::new("icacls")
-        .args(&[path, "/grant", &format!("{user}:F")])
+        .args([path, "/grant", &format!("{user}:F")])
         .output()
         .context("icacls 执行失败")?;
     Ok(())
