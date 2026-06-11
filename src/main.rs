@@ -5,8 +5,9 @@ use zip::read::ZipArchive;
 use std::env;
 use std::fs::File;
 use std::io;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
+use std::process;
 
 
 const BASE_URL: &str = "https://cn.dll-files.com";
@@ -19,6 +20,8 @@ const X64_SYSTEM_PATH: &str = r"C:\Windows\System32\";
 
 struct Config {
     force: bool,
+    system32_path: String,
+    syswow64_path: String,
     dll_names: Vec<String>,
 }
 
@@ -32,12 +35,16 @@ fn print_help() {
   <name.dll>...        要安装的 DLL 文件名（至少一个）
 
 选项:
-  -f, --force           强制覆盖已存在的文件
+  -f, --force           强制覆盖已存在的文件（自动备份为 .bak）
   -h, --help            显示此帮助信息
+      --system32 <路径>  自定义 x64 系统目录（默认: C:\Windows\System32\）
+      --syswow64 <路径>  自定义 x86 系统目录（默认: C:\Windows\SysWOW64\）
+      --search <关键词>  搜索 DLL 文件并交互选择
 
 示例:
   dll dxgi.dll
-  dll -f dxgi.dll d3dcompiler.dll"
+  dll -f dxgi.dll d3dcompiler.dll
+  dll --search directx"
     );
 }
 
@@ -48,7 +55,10 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     }
 
     let mut force = false;
+    let mut system32_path = X64_SYSTEM_PATH.to_string();
+    let mut syswow64_path = X32_SYSTEM_PATH.to_string();
     let mut dll_names = Vec::new();
+    let mut search_term = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -56,7 +66,31 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
             "-f" | "--force" => force = true,
             "-h" | "--help" => {
                 print_help();
-                std::process::exit(0);
+                process::exit(0);
+            }
+            "--system32" => {
+                i += 1;
+                let mut p = args.get(i).context("--system32 需要路径参数")?.clone();
+                if !p.ends_with('\\') && !p.ends_with('/') {
+                    p.push('\\');
+                }
+                system32_path = p;
+            }
+            "--syswow64" => {
+                i += 1;
+                let mut p = args.get(i).context("--syswow64 需要路径参数")?.clone();
+                if !p.ends_with('\\') && !p.ends_with('/') {
+                    p.push('\\');
+                }
+                syswow64_path = p;
+            }
+            "--search" => {
+                i += 1;
+                search_term = Some(
+                    args.get(i)
+                        .context("--search 需要搜索关键词")?
+                        .clone(),
+                );
             }
             s if s.starts_with('-') => anyhow::bail!("未知选项: {}", s),
             name => {
@@ -70,12 +104,30 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
         i += 1;
     }
 
+    if let Some(term) = search_term {
+        let results = search_dll(&term)?;
+        let selected = if results.len() == 1 {
+            println!("找到: {}", results[0]);
+            results[0].clone()
+        } else if results.is_empty() {
+            anyhow::bail!("未找到与 '{}' 相关的 DLL", term);
+        } else {
+            select_interactive(&results)?
+        };
+        dll_names.push(selected.to_lowercase());
+    }
+
     if dll_names.is_empty() {
         print_help();
         anyhow::bail!("未指定 DLL 文件名");
     }
 
-    Ok(Config { force, dll_names })
+    Ok(Config {
+        force,
+        system32_path,
+        syswow64_path,
+        dll_names,
+    })
 }
 
 fn parse_args() -> anyhow::Result<Config> {
@@ -97,6 +149,7 @@ impl Architecture {
         }
     }
 
+    #[allow(dead_code)]
     fn system_path(self) -> &'static str {
         match self {
             Architecture::X32 => X32_SYSTEM_PATH,
@@ -236,12 +289,22 @@ impl Dll<'_> {
         let cursor = Cursor::new(resp.as_bytes());
         let mut archive = ZipArchive::new(cursor).context("解压 ZIP 失败")?;
 
-        let sys_path = arch.system_path();
+        let sys_path = match arch {
+            Architecture::X32 => &self.config.syswow64_path,
+            Architecture::X64 => &self.config.system32_path,
+        };
         let dll_file_path = format!("{}{}", sys_path, self.name);
 
-        if !self.config.force && Path::new(&dll_file_path).exists() {
-            println!("{} 已存在，跳过安装", self.name);
-            return Ok(());
+        if Path::new(&dll_file_path).exists() {
+            if self.config.force {
+                let backup = format!("{}.bak", dll_file_path);
+                std::fs::rename(&dll_file_path, &backup)
+                    .with_context(|| format!("备份 {} 失败", self.name))?;
+                println!("已备份原文件到 {}", backup);
+            } else {
+                println!("{} 已存在，跳过安装", self.name);
+                return Ok(());
+            }
         }
 
         let mut extracted = false;
@@ -286,6 +349,61 @@ fn is_valid_pe(path: &str) -> bool {
         }
     }
     false
+}
+
+fn search_dll(query: &str) -> anyhow::Result<Vec<String>> {
+    let url = format!("{BASE_URL}/search?q={}", query);
+    let resp = minreq::get(&url)
+        .with_header("User-Agent", USER_AGENT)
+        .with_timeout(TIMEOUT_SECS)
+        .send()
+        .context("搜索请求失败")?;
+    let html = resp.as_str().context("读取搜索结果失败")?;
+
+    let re = Regex::new(r#"(?i)<a\s+href="/([a-z0-9_.-]+\.html)"[^>]*>"#)?;
+    let mut results: Vec<String> = Vec::new();
+    for cap in re.captures_iter(html) {
+        let name = cap[1].trim_end_matches(".html");
+        if name.ends_with(".dll") && !results.contains(&name.to_string()) {
+            results.push(name.to_string());
+        }
+    }
+
+    if results.is_empty() {
+        let fallback_re = Regex::new(r#"(?i) ([a-z0-9_.-]+\.dll)"#)?;
+        for cap in fallback_re.captures_iter(html) {
+            let n = cap[1].to_lowercase();
+            if !results.contains(&n) {
+                results.push(n);
+            }
+        }
+    }
+
+    results.sort();
+    results.dedup();
+    Ok(results)
+}
+
+fn select_interactive(results: &[String]) -> anyhow::Result<String> {
+    println!("\n找到以下匹配的 DLL 文件：\n");
+    for (i, name) in results.iter().enumerate() {
+        println!("  {}. {}", i + 1, name);
+    }
+    print!("\n请选择编号 (1-{}): ", results.len());
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let index: usize = input
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("无效输入，请输入数字"))?;
+
+    if index < 1 || index > results.len() {
+        anyhow::bail!("编号超出范围 (1-{})", results.len());
+    }
+
+    Ok(results[index - 1].clone())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -383,6 +501,48 @@ mod tests {
         let args = &["dll".to_string(), "DXGI.DLL".to_string()];
         let cfg = parse_args_from(args).unwrap();
         assert_eq!(cfg.dll_names, vec!["dxgi.dll"]);
+    }
+
+    #[test]
+    fn parse_system32_flag() {
+        let args = &[
+            "dll".to_string(),
+            "--system32".to_string(),
+            r"D:\custom".to_string(),
+            "dxgi.dll".to_string(),
+        ];
+        let cfg = parse_args_from(args).unwrap();
+        assert_eq!(cfg.system32_path, r"D:\custom\");
+    }
+
+    #[test]
+    fn parse_syswow64_flag() {
+        let args = &[
+            "dll".to_string(),
+            "--syswow64".to_string(),
+            r"E:\other".to_string(),
+            "dxgi.dll".to_string(),
+        ];
+        let cfg = parse_args_from(args).unwrap();
+        assert_eq!(cfg.syswow64_path, r"E:\other\");
+    }
+
+    #[test]
+    fn parse_system32_trailing_slash_not_added() {
+        let args = &[
+            "dll".to_string(),
+            "--system32".to_string(),
+            r"C:\Windows\".to_string(),
+            "dxgi.dll".to_string(),
+        ];
+        let cfg = parse_args_from(args).unwrap();
+        assert_eq!(cfg.system32_path, r"C:\Windows\");
+    }
+
+    #[test]
+    fn parse_system32_flag_missing_arg() {
+        let args = &["dll".to_string(), "--system32".to_string(), "dxgi.dll".to_string()];
+        assert!(parse_args_from(args).is_err());
     }
 
     #[test]

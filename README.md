@@ -37,13 +37,25 @@ dll dxgi.dll
 dll dxgi.dll d3dcompiler.dll d3dx9.dll
 ```
 
-使用 `--force`（或 `-f`）强制覆盖已存在的文件：
+使用 `--force`（或 `-f`）强制覆盖已存在的文件（自动备份为 `.bak`）：
 
 ```powershell
 dll -f dxgi.dll d3dcompiler.dll
 ```
 
-参数**必须以 `.dll` 结尾**。工具会自动查找并安装 32 位和 64 位两个版本到对应的系统目录。如果 DLL 已存在则跳过（除非指定 `-f`）。
+自定义安装目录：
+
+```powershell
+dll --system32 D:\my-dlls --syswow64 D:\my-dlls\x86 dxgi.dll
+```
+
+搜索并交互选择：
+
+```powershell
+dll --search directx
+```
+
+参数**必须以 `.dll` 结尾**（搜索模式除外）。工具会自动查找并安装 32 位和 64 位两个版本到对应的系统目录。如果 DLL 已存在则跳过（除非指定 `-f`）。
 
 ## 工作原理
 
