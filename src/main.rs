@@ -6,7 +6,7 @@ use std::env;
 use std::fs::File;
 use std::io;
 use std::io::{Cursor, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 
@@ -23,6 +23,7 @@ struct Config {
     system32_path: String,
     syswow64_path: String,
     dll_names: Vec<String>,
+    restore_name: Option<String>,
 }
 
 fn print_help() {
@@ -35,16 +36,19 @@ fn print_help() {
   <name.dll>...        要安装的 DLL 文件名（至少一个）
 
 选项:
-  -f, --force           强制覆盖已存在的文件（自动备份为 .bak）
+  -f, --force           强制覆盖已存在的文件（自动备份到 %%TEMP%%\dll-rs\）
   -h, --help            显示此帮助信息
       --system32 <路径>  自定义 x64 系统目录（默认: C:\Windows\System32\）
       --syswow64 <路径>  自定义 x86 系统目录（默认: C:\Windows\SysWOW64\）
       --search <关键词>  搜索 DLL 文件并交互选择
+      --restore [名称]   从 %%TEMP%%\dll-rs\ 恢复备份
 
 示例:
   dll dxgi.dll
   dll -f dxgi.dll d3dcompiler.dll
-  dll --search directx"
+  dll --search directx
+  dll --restore
+  dll --restore dxgi.dll"
     );
 }
 
@@ -59,6 +63,7 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     let mut syswow64_path = X32_SYSTEM_PATH.to_string();
     let mut dll_names = Vec::new();
     let mut search_term = None;
+    let mut restore_name = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -92,6 +97,18 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
                         .clone(),
                 );
             }
+            "--restore" => {
+                let next = args.get(i + 1);
+                match next {
+                    Some(n) if !n.starts_with('-') => {
+                        i += 1;
+                        restore_name = Some(n.to_lowercase());
+                    }
+                    _ => {
+                        restore_name = Some(String::new());
+                    }
+                }
+            }
             s if s.starts_with('-') => anyhow::bail!("未知选项: {}", s),
             name => {
                 let lower = name.to_lowercase();
@@ -117,7 +134,7 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
         dll_names.push(selected.to_lowercase());
     }
 
-    if dll_names.is_empty() {
+    if dll_names.is_empty() && restore_name.is_none() {
         print_help();
         anyhow::bail!("未指定 DLL 文件名");
     }
@@ -127,6 +144,7 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
         system32_path,
         syswow64_path,
         dll_names,
+        restore_name,
     })
 }
 
@@ -297,10 +315,10 @@ impl Dll<'_> {
 
         if Path::new(&dll_file_path).exists() {
             if self.config.force {
-                let backup = format!("{}.bak", dll_file_path);
+                let backup = backup_path(&dll_file_path)?;
                 std::fs::rename(&dll_file_path, &backup)
                     .with_context(|| format!("备份 {} 失败", self.name))?;
-                println!("已备份原文件到 {}", backup);
+                println!("已备份原文件到 {}", backup.display());
             } else {
                 println!("{} 已存在，跳过安装", self.name);
                 return Ok(());
@@ -406,8 +424,99 @@ fn select_interactive(results: &[String]) -> anyhow::Result<String> {
     Ok(results[index - 1].clone())
 }
 
+fn backup_dir() -> PathBuf {
+    std::env::temp_dir().join("dll-rs")
+}
+
+fn backup_path(original: &str) -> anyhow::Result<PathBuf> {
+    let dir = backup_dir();
+    std::fs::create_dir_all(&dir).context("创建备份目录失败")?;
+    let safe = original.replace(':', "_").replace('\\', "_");
+    Ok(dir.join(format!("{}.bak", safe)))
+}
+
+fn parse_backup_name(filename: &str) -> Option<String> {
+    let s = filename.strip_suffix(".bak")?;
+    let original = s.replace('_', "\\").replacen("_", ":", 1);
+    Some(original)
+}
+
+fn list_backups(filter: Option<&str>) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let dir = backup_dir();
+    if !dir.exists() {
+        anyhow::bail!("备份目录不存在: {}", dir.display());
+    }
+
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(&dir).context("读取备份目录失败")? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bak") {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(original) = parse_backup_name(&name) {
+            if let Some(f) = filter {
+                if !f.is_empty() && !original.to_lowercase().contains(&f.to_lowercase()) {
+                    continue;
+                }
+            }
+            entries.push((original, path));
+        }
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
+
+fn restore_dll(backup_path: &Path, original_path: &str) -> anyhow::Result<()> {
+    if let Some(parent) = Path::new(original_path).parent() {
+        std::fs::create_dir_all(parent).context("创建目标目录失败")?;
+    }
+    std::fs::rename(backup_path, original_path)
+        .with_context(|| format!("恢复文件失败: {}", original_path))?;
+    Ok(())
+}
+
+fn restore_flow(filter: &str) -> anyhow::Result<()> {
+    let entries = list_backups(Some(filter))?;
+
+    if entries.is_empty() {
+        anyhow::bail!("没有找到匹配的备份文件");
+    }
+
+    let (original, backup) = if entries.len() == 1 {
+        entries.into_iter().next().unwrap()
+    } else {
+        println!("\n找到以下备份：\n");
+        for (i, (orig, _)) in entries.iter().enumerate() {
+            println!("  {}. {}", i + 1, orig);
+        }
+        print!("\n请选择编号 (1-{}): ", entries.len());
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let idx: usize = input
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("无效输入，请输入数字"))?;
+        if idx < 1 || idx > entries.len() {
+            anyhow::bail!("编号超出范围 (1-{})", entries.len());
+        }
+        entries.into_iter().nth(idx - 1).unwrap()
+    };
+
+    restore_dll(&backup, &original)?;
+    println!("已恢复: {}", original);
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let config = parse_args()?;
+
+    if let Some(ref filter) = config.restore_name {
+        return restore_flow(filter.as_str());
+    }
 
     for name in &config.dll_names {
         println!("━━━ {} ━━━", name);
