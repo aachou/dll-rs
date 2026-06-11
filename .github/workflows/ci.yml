@@ -48,3 +48,4 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dll-windows-x64.zip
+          generate_release_notes: true
