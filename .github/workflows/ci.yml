@@ -38,6 +38,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
@@ -45,8 +47,41 @@ jobs:
       - run: cargo build --release
       - run: .\target\release\dll.exe --version
       - run: Compress-Archive -Path target\release\dll.exe -DestinationPath dll-windows-x64.zip
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $prevTag = git tag --sort=-version:refname | Where-Object { $_ -like 'v*' -and $_ -ne $tag } | Select-Object -First 1
+          if (-not $prevTag) { $prevTag = git rev-list --max-parents=0 HEAD }
+
+          $log = git log "$prevTag..HEAD" --oneline --no-decorate
+          if (-not $log) { $log = git log HEAD~5..HEAD --oneline --no-decorate }
+
+          $feats = @(); $fixes = @(); $ci = @(); $other = @()
+          foreach ($line in $log) {
+            $hash = $line.Split(' ')[0]
+            $msg = $line.Substring($hash.Length).TrimStart()
+            if ($msg -match '^(feat|feature)\b') { $feats += $msg }
+            elseif ($msg -match '^fix\b') { $fixes += $msg }
+            elseif ($msg -match '^ci\b') { $ci += $msg }
+            else { $other += $msg }
+          }
+
+          $body = @()
+          $body += "# $tag"
+          $body += ""
+          if ($feats) { $body += "## 🚀 新功能"; $body += ""; $feats | % { $body += "- $_" }; $body += "" }
+          if ($fixes) { $body += "## 🐛 修复"; $body += ""; $fixes | % { $body += "- $_" }; $body += "" }
+          if ($ci) { $body += "## ⚙️ CI"; $body += ""; $ci | % { $body += "- $_" }; $body += "" }
+          if ($other) { $body += "## 📦 其他"; $body += ""; $other | % { $body += "- $_" }; $body += "" }
+
+          $body += "---"
+          $body += "### 📥 下载"
+          $body += "- [dll-windows-x64.zip](https://github.com/aachou/dll-rs/releases/download/$tag/dll-windows-x64.zip)"
+
+          $body -join "`n" | Out-File -Encoding utf8 -FilePath $env:RUNNER_TEMP\release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
           files: dll-windows-x64.zip
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}\release-notes.md
 
