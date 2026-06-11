@@ -56,15 +56,15 @@ async fn main() -> anyhow::Result<()> {
             let dll = scraper::Dll::new(name.clone(), &config);
             match dll.process().await {
                 Ok((x32_ok, x64_ok)) => {
-                    let status = match (x32_ok, x64_ok) {
-                        (true, true) => "全部成功",
-                        (false, false) => "全部失败",
-                        (true, false) => "仅 x86 成功",
-                        (false, true) => "仅 x64 成功",
+                    let (sym, status) = match (x32_ok, x64_ok) {
+                        (true, true) => ("\x1b[32m✓\x1b[0m", "全部成功"),
+                        (false, false) => ("\x1b[31m✗\x1b[0m", "全部失败"),
+                        (true, false) => ("\x1b[33m⚠\x1b[0m", "仅 x86 成功"),
+                        (false, true) => ("\x1b[33m⚠\x1b[0m", "仅 x64 成功"),
                     };
-                    println!("结果: {} —— {}", name, status);
+                    println!("  {} {} —— {}", sym, name, status);
                 }
-                Err(e) => eprintln!("{} 处理失败: {}", name, e),
+                Err(_) => eprintln!("  \x1b[31m✗\x1b[0m {} 处理失败", name),
             }
             println!();
         }
@@ -498,7 +498,7 @@ mod tests {
         let dest = dir.join("test.dll").to_string_lossy().to_string();
         let zip_data = create_dummy_zip("test.dll", b"MZ\x90\x00\x00\x00");
 
-        installer::extract_and_write("test.dll", &zip_data, &dest, false).unwrap();
+        installer::extract_and_write("test.dll", &zip_data, &dest, false, false).unwrap();
         assert!(std::path::Path::new(&dest).exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -511,7 +511,7 @@ mod tests {
         let dest = dir.join("bad.dll").to_string_lossy().to_string();
         let zip_data = create_dummy_zip("bad.dll", b"\x00\x00\x00\x00");
 
-        assert!(installer::extract_and_write("bad.dll", &zip_data, &dest, false).is_err());
+        assert!(installer::extract_and_write("bad.dll", &zip_data, &dest, false, false).is_err());
         assert!(!std::path::Path::new(&dest).exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -524,7 +524,7 @@ mod tests {
         let dest = dir.join("other.dll").to_string_lossy().to_string();
         let zip_data = create_dummy_zip("something_else.dll", b"MZ\x90\x00");
 
-        assert!(installer::extract_and_write("other.dll", &zip_data, &dest, false).is_err());
+        assert!(installer::extract_and_write("other.dll", &zip_data, &dest, false, false).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

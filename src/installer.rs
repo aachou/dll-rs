@@ -2,6 +2,7 @@ use anyhow::Context;
 use std::fs::File;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use zip::read::ZipArchive;
 
 /// 检查文件是否为有效的 PE 格式（以 `MZ` 魔数字节开头）。
@@ -88,12 +89,27 @@ pub fn restore_dll(backup_path: &Path, original_path: &str) -> anyhow::Result<()
     Ok(())
 }
 
+/// 尝试通过 `takeown` + `icacls` 获取文件所有权和写入权限（绕过 WRP）。
+fn try_take_ownership(path: &str) -> anyhow::Result<()> {
+    Command::new("takeown")
+        .args(&["/f", path])
+        .output()
+        .context("takeown 执行失败")?;
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string());
+    Command::new("icacls")
+        .args(&[path, "/grant", &format!("{user}:F")])
+        .output()
+        .context("icacls 执行失败")?;
+    Ok(())
+}
+
 /// 从 ZIP 数据中提取与 `dll_name` 匹配的 DLL，校验 PE 后写入 `dest_path`。
 pub fn extract_and_write(
     dll_name: &str,
     zip_data: &[u8],
     dest_path: &str,
     verbose: bool,
+    force: bool,
 ) -> anyhow::Result<()> {
     let cursor = Cursor::new(zip_data);
     let mut archive = ZipArchive::new(cursor).context("解压 ZIP 失败")?;
@@ -119,7 +135,26 @@ pub fn extract_and_write(
             continue;
         }
 
-        let mut dll_file = File::create(dest_path).context("创建文件失败")?;
+        if force {
+            let _ = std::fs::remove_file(dest_path);
+        }
+        let mut dll_file = match File::create(dest_path) {
+            Ok(f) => f,
+            Err(e) if e.raw_os_error() == Some(5) => {
+                eprintln!("  \x1b[33m⚠\x1b[0m 权限不足，尝试通过 takeown + icacls 获取写入权限...");
+                try_take_ownership(dest_path)?;
+                if force {
+                    let _ = std::fs::remove_file(dest_path);
+                }
+                File::create(dest_path).with_context(|| {
+                    format!(
+                        "无法写入 {}（即使以管理员运行，Windows 资源保护 WRP 仍阻止修改系统文件）。\n请使用 --output <目录> 下载到自定义目录",
+                        dest_path
+                    )
+                })?
+            }
+            Err(e) => anyhow::bail!("创建文件失败: {}", e),
+        };
         if let Err(e) = io::copy(&mut file, &mut dll_file) {
             let _ = std::fs::remove_file(dest_path);
             anyhow::bail!("写入文件失败: {}", e);
