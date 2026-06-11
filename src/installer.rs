@@ -1,0 +1,131 @@
+use anyhow::Context;
+use std::fs::File;
+use std::io::{self, Cursor, Read};
+use std::path::{Path, PathBuf};
+use zip::read::ZipArchive;
+
+pub fn is_valid_pe(path: &str) -> bool {
+    let mut buf = [0u8; 2];
+    if let Ok(mut f) = File::open(path) {
+        if f.read_exact(&mut buf).is_ok() {
+            return buf == [b'M', b'Z'];
+        }
+    }
+    false
+}
+
+pub fn backup_dir() -> PathBuf {
+    std::env::temp_dir().join("dll-rs")
+}
+
+pub fn backup_path(original: &str) -> anyhow::Result<PathBuf> {
+    let dir = backup_dir();
+    std::fs::create_dir_all(&dir).context("创建备份目录失败")?;
+    let safe = original.replace(':', "").replace('\\', "_");
+    Ok(dir.join(format!("{}.bak", safe)))
+}
+
+pub fn parse_backup_name(filename: &str) -> Option<String> {
+    let s = filename.strip_suffix(".bak")?;
+    let parts: Vec<&str> = s.split('_').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut result = parts[0].to_string();
+    result.push(':');
+    result.push('\\');
+    result.push_str(&parts[1..].join("\\"));
+    Some(result)
+}
+
+pub fn list_backups(filter: Option<&str>) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    list_backups_from_dir(&backup_dir(), filter)
+}
+
+pub fn list_backups_from_dir(
+    dir: &Path,
+    filter: Option<&str>,
+) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    if !dir.exists() {
+        anyhow::bail!("备份目录不存在: {}", dir.display());
+    }
+
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(dir).context("读取备份目录失败")? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bak") {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(original) = parse_backup_name(&name) {
+            if let Some(f) = filter {
+                if !f.is_empty() && !original.to_lowercase().contains(&f.to_lowercase()) {
+                    continue;
+                }
+            }
+            entries.push((original, path));
+        }
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
+
+pub fn restore_dll(backup_path: &Path, original_path: &str) -> anyhow::Result<()> {
+    if let Some(parent) = Path::new(original_path).parent() {
+        std::fs::create_dir_all(parent).context("创建目标目录失败")?;
+    }
+    std::fs::rename(backup_path, original_path)
+        .with_context(|| format!("恢复文件失败: {}", original_path))?;
+    Ok(())
+}
+
+pub fn extract_and_write(
+    dll_name: &str,
+    zip_data: &[u8],
+    dest_path: &str,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    let cursor = Cursor::new(zip_data);
+    let mut archive = ZipArchive::new(cursor).context("解压 ZIP 失败")?;
+
+    if verbose {
+        println!("  ZIP 包含 {} 个文件", archive.len());
+    }
+
+    let mut extracted = false;
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).context("读取 ZIP 条目失败")?;
+        if !file.name().ends_with(".dll") {
+            continue;
+        }
+        if !file.name().to_lowercase().ends_with(&dll_name.to_lowercase()) {
+            if verbose {
+                println!("  跳过 ZIP 条目: {}", file.name());
+            }
+            continue;
+        }
+
+        let mut dll_file = File::create(dest_path).context("创建文件失败")?;
+        if let Err(e) = io::copy(&mut file, &mut dll_file) {
+            let _ = std::fs::remove_file(dest_path);
+            anyhow::bail!("写入文件失败: {}", e);
+        }
+        drop(dll_file);
+
+        if !is_valid_pe(dest_path) {
+            let _ = std::fs::remove_file(dest_path);
+            anyhow::bail!("下载的文件不是有效的 PE 格式");
+        }
+
+        extracted = true;
+        break;
+    }
+
+    if !extracted {
+        anyhow::bail!("ZIP 中未找到与 {} 匹配的 DLL 文件", dll_name);
+    }
+
+    Ok(())
+}
