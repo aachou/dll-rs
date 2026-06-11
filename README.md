@@ -1,21 +1,21 @@
 # dll-rs
 
-Install missing or corrupted DLL files from the command line.
+一行命令安装缺失或损坏的 DLL 文件。
 
-Scrapes `cn.dll-files.com` for the DLL, downloads the ZIP, extracts the `.dll`, and writes it to the correct system directory — both x64 (`System32`) and x32 (`SysWOW64`).
+自动从 `cn.dll-files.com` 抓取 DLL，下载 ZIP 包，解压 `.dll` 文件并写入正确的系统目录——同时处理 x64（`System32`）和 x32（`SysWOW64`）。
 
-## Requirements
+## 环境要求
 
-- Windows (x64)
-- Administrator privileges
+- Windows（x64）
+- 管理员权限
 
-## Install
+## 安装
 
 ```powershell
 cargo install dll
 ```
 
-Or build from source:
+或从源码构建：
 
 ```powershell
 git clone https://github.com/aachou/dll-rs.git
@@ -23,25 +23,25 @@ cd dll-rs
 cargo build --release
 ```
 
-## Usage
+## 用法
 
-Run **as Administrator**, then:
+**以管理员身份运行**，然后：
 
 ```powershell
 dll dxgi.dll
 ```
 
-The argument **must end with `.dll`**. The tool finds both 32-bit and 64-bit versions and installs them to the appropriate system directories. If a DLL already exists, it is skipped silently.
+参数**必须以 `.dll` 结尾**。工具会自动查找并安装 32 位和 64 位两个版本到对应的系统目录。如果 DLL 已存在则跳过。
 
-## How it works
+## 工作原理
 
-1. Fetches `https://cn.dll-files.com/<name>.html` and parses the download page URLs for each architecture.
-2. Visits each download page to extract the real download link from embedded JavaScript.
-3. Downloads the ZIP archive and extracts the `.dll` file.
-4. Writes it to `C:\Windows\System32\` (x64) and `C:\Windows\SysWOW64\` (x32).
+1. 请求 `https://cn.dll-files.com/<name>.html`，解析各架构的下载页面链接。
+2. 访问下载页面，从嵌入的 JavaScript 中提取真实下载地址。
+3. 下载 ZIP 压缩包，解压出 `.dll` 文件。
+4. 写入 `C:\Windows\System32\`（x64）和 `C:\Windows\SysWOW64\`（x32）。
 
-x32 and x64 installations are independent — if one architecture is not found on the site, the other is still installed.
+x32 和 x64 安装相互独立——即使某个架构在页面上找不到，另一个架构仍会正常安装。
 
-## License
+## 许可证
 
 MIT
