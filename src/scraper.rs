@@ -14,10 +14,18 @@ const C_CYAN: &str = "\x1b[36m";
 
 const C_RESET: &str = "\x1b[0m";
 
-fn ok(msg: impl std::fmt::Display) -> String { format!("{C_GREEN}✓{C_RESET} {msg}") }
-fn err(msg: impl std::fmt::Display) -> String { format!("{C_RED}✗{C_RESET} {msg}") }
-fn info(msg: impl std::fmt::Display) -> String { format!("{C_CYAN}→{C_RESET} {msg}") }
-fn warn(msg: impl std::fmt::Display) -> String { format!("{C_YELLOW}⚠{C_RESET} {msg}") }
+fn ok(msg: impl std::fmt::Display) -> String {
+    format!("{C_GREEN}✓{C_RESET} {msg}")
+}
+fn err(msg: impl std::fmt::Display) -> String {
+    format!("{C_RED}✗{C_RESET} {msg}")
+}
+fn info(msg: impl std::fmt::Display) -> String {
+    format!("{C_CYAN}→{C_RESET} {msg}")
+}
+fn warn(msg: impl std::fmt::Display) -> String {
+    format!("{C_YELLOW}⚠{C_RESET} {msg}")
+}
 
 fn short_path(p: &std::path::Path) -> String {
     let s = p.to_string_lossy();
@@ -98,7 +106,11 @@ fn validate_zip(data: &[u8], verbose: bool) -> anyhow::Result<()> {
             let first = &data[..data.len().min(128)];
             String::from_utf8_lossy(first).to_string()
         };
-        anyhow::bail!("下载的内容不是有效的 ZIP 文件 (前 {} 字节: {:?})", data.len().min(128), preview);
+        anyhow::bail!(
+            "下载的内容不是有效的 ZIP 文件 (前 {} 字节: {:?})",
+            data.len().min(128),
+            preview
+        );
     }
     if verbose {
         println!("  ZIP 校验通过");
@@ -111,18 +123,30 @@ async fn try_download(client: &Client, url: &str, referer: &str) -> anyhow::Resu
         .get(url)
         .header("Referer", referer)
         .header("Origin", "https://cn.dll-files.com")
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        )
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .header("Sec-Fetch-Dest", "document")
         .header("Sec-Fetch-Mode", "navigate")
         .header("Sec-Fetch-Site", "same-origin")
-        .send().await.context("下载请求失败")?;
+        .send()
+        .await
+        .context("下载请求失败")?;
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("服务器返回 {} (前 256 字节: {})", status, &text[..text.len().min(256)]);
+        anyhow::bail!(
+            "服务器返回 {} (前 256 字节: {})",
+            status,
+            &text[..text.len().min(256)]
+        );
     }
-    resp.bytes().await.map(|b| b.to_vec()).context("读取响应数据失败")
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .context("读取响应数据失败")
 }
 
 async fn try_download_http1(url: &str, referer: &str) -> anyhow::Result<Vec<u8>> {
@@ -134,8 +158,15 @@ async fn try_download_http1(url: &str, referer: &str) -> anyhow::Result<Vec<u8>>
     try_download(&client, url, referer).await
 }
 
-async fn download_zip_data(client: &Client, url: &str, referers: &[&str], verbose: bool) -> anyhow::Result<Vec<u8>> {
-        if verbose { println!("  URL: {}", url); }
+async fn download_zip_data(
+    client: &Client,
+    url: &str,
+    referers: &[&str],
+    verbose: bool,
+) -> anyhow::Result<Vec<u8>> {
+    if verbose {
+        println!("  URL: {}", url);
+    }
     let spinner = if verbose { None } else { Some(make_spinner()) };
 
     let mut last_err = None;
@@ -143,11 +174,15 @@ async fn download_zip_data(client: &Client, url: &str, referers: &[&str], verbos
         match try_download(client, url, referer).await {
             Ok(data) => {
                 validate_zip(&data, verbose)?;
-                if let Some(ref pb) = spinner { pb.finish_and_clear(); }
+                if let Some(ref pb) = spinner {
+                    pb.finish_and_clear();
+                }
                 return Ok(data);
             }
             Err(e) => {
-                if verbose { eprintln!("  Referer '{}': {}", referer, e); }
+                if verbose {
+                    eprintln!("  Referer '{}': {}", referer, e);
+                }
                 last_err = Some(e);
             }
         }
@@ -157,17 +192,23 @@ async fn download_zip_data(client: &Client, url: &str, referers: &[&str], verbos
         match try_download_http1(url, referer).await {
             Ok(data) => {
                 validate_zip(&data, verbose)?;
-                if let Some(ref pb) = spinner { pb.finish_and_clear(); }
+                if let Some(ref pb) = spinner {
+                    pb.finish_and_clear();
+                }
                 return Ok(data);
             }
             Err(e) => {
-                if verbose { eprintln!("  HTTP/1.1 Referer '{}': {}", referer, e); }
+                if verbose {
+                    eprintln!("  HTTP/1.1 Referer '{}': {}", referer, e);
+                }
                 last_err = Some(e);
             }
         }
     }
 
-    if let Some(ref pb) = spinner { pb.finish_and_clear(); }
+    if let Some(ref pb) = spinner {
+        pb.finish_and_clear();
+    }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("所有下载策略均失败")))
 }
 
@@ -247,7 +288,10 @@ impl Dll<'_> {
         .await?;
 
         if html.contains("error-404") {
-            anyhow::bail!("未找到 {} 的下载页面，请尝试使用 --search 搜索正确的文件名", self.name);
+            anyhow::bail!(
+                "未找到 {} 的下载页面，请尝试使用 --search 搜索正确的文件名",
+                self.name
+            );
         }
 
         let section_re = Regex::new(r#"(?s)<section class="file-info-grid".+?</section>"#)
@@ -342,8 +386,16 @@ impl Dll<'_> {
         let referers = [page_url, main_page_url];
         let data = download_zip_data(client, &download_url, &referers, verbose)
             .await
-            .with_context(|| format!("下载 {} 失败。提示: 可尝试 --proxy http://127.0.0.1:7897", tag))?;
-        println!("  {}", ok(format!("{} 下载完成 ({})", tag, format_size(data.len()))));
+            .with_context(|| {
+                format!(
+                    "下载 {} 失败。提示: 可尝试 --proxy http://127.0.0.1:7897",
+                    tag
+                )
+            })?;
+        println!(
+            "  {}",
+            ok(format!("{} 下载完成 ({})", tag, format_size(data.len())))
+        );
 
         let dest_path = if let Some(ref out) = self.config.output_dir {
             format!("{}{}", out, self.name)
