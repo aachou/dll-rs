@@ -9,7 +9,7 @@ pub fn is_valid_pe(path: &str) -> bool {
     let mut buf = [0u8; 2];
     if let Ok(mut f) = File::open(path) {
         if f.read_exact(&mut buf).is_ok() {
-            return buf == [b'M', b'Z'];
+            return buf == *b"MZ";
         }
     }
     false

@@ -194,10 +194,8 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     let env_proxy = proxy_from_env();
     let mut proxy = if !cf.proxy.is_empty() {
         Some(cf.proxy.clone())
-    } else if let Some(ref p) = env_proxy {
-        Some(p.clone())
     } else {
-        None
+        env_proxy.clone()
     };
     let mut dll_names = Vec::new();
     let mut search_term = None;
