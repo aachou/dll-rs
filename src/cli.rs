@@ -113,7 +113,7 @@ pub fn print_help() {
       --syswow64 <路径>  自定义 x86 系统目录（默认: C:\Windows\SysWOW64\）
       --search <关键词>  搜索 DLL 文件并交互选择
       --restore [名称]   从 %%TEMP%%\dll-rs\ 恢复备份
-      --proxy <地址>     使用 HTTP 代理（如 http://127.0.0.1:8080）
+      --proxy <地址>     使用 HTTP 代理（默认读取 HTTPS_PROXY/HTTP_PROXY 环境变量）
       --output <目录>    只下载到指定目录，不安装到系统
       --save-config      将当前选项保存到配置文件
 
@@ -125,6 +125,17 @@ pub fn print_help() {
   dll --restore dxgi.dll
   dll --proxy http://127.0.0.1:8080 dxgi.dll"
     );
+}
+
+fn proxy_from_env() -> Option<String> {
+    for key in &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+        if let Ok(val) = env::var(key) {
+            if !val.is_empty() {
+                return Some(val);
+            }
+        }
+    }
+    None
 }
 
 pub fn select_interactive(items: &[String], prompt: &str) -> anyhow::Result<String> {
@@ -164,10 +175,13 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     } else {
         cf.syswow64_path.clone()
     };
-    let mut proxy = if cf.proxy.is_empty() {
-        None
-    } else {
+    let env_proxy = proxy_from_env();
+    let mut proxy = if !cf.proxy.is_empty() {
         Some(cf.proxy.clone())
+    } else if let Some(ref p) = env_proxy {
+        Some(p.clone())
+    } else {
+        None
     };
     let mut dll_names = Vec::new();
     let mut search_term = None;
