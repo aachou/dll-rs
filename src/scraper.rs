@@ -1,6 +1,8 @@
 use anyhow::Context;
+use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
-use std::time::Duration;
+use reqwest::Client;
+use tokio::time::{sleep, Duration};
 
 use crate::cli::{Architecture, Config};
 use crate::installer;
@@ -8,28 +10,33 @@ use crate::installer;
 fn base_url() -> String {
     std::env::var("DLL_RS_BASE_URL").unwrap_or_else(|_| "https://cn.dll-files.com".to_string())
 }
+
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) dll-rs/0.2.0";
 const TIMEOUT_SECS: u64 = 30;
 const MAX_RETRIES: u32 = 3;
 
-/// 发送 HTTP GET 请求（无重试）。
-pub fn fetch_page(url: &str, proxy: Option<&str>) -> anyhow::Result<minreq::Response> {
-    let mut req = minreq::get(url)
-        .with_header("User-Agent", USER_AGENT)
-        .with_timeout(TIMEOUT_SECS);
+pub fn build_client(proxy: Option<&str>) -> anyhow::Result<Client> {
+    let mut builder = Client::builder()
+        .timeout(Duration::from_secs(TIMEOUT_SECS))
+        .user_agent(USER_AGENT);
     if let Some(p) = proxy {
-        req = req.with_proxy(minreq::Proxy::new(p).context("无效代理地址")?);
+        let proxy = reqwest::Proxy::all(p).context("无效代理地址")?;
+        builder = builder.proxy(proxy);
     }
-    req.send().context("发送请求失败")
+    builder.build().context("创建 HTTP 客户端失败")
 }
 
-/// 带指数退避重试（最多 3 次）的 HTTP GET。
-pub fn fetch_page_with_retry(
+pub async fn fetch_page(client: &Client, url: &str) -> anyhow::Result<String> {
+    let resp = client.get(url).send().await.context("发送请求失败")?;
+    resp.text().await.context("读取响应失败")
+}
+
+pub async fn fetch_page_with_retry(
+    client: &Client,
     url: &str,
-    proxy: Option<&str>,
     verbose: bool,
-) -> anyhow::Result<minreq::Response> {
+) -> anyhow::Result<String> {
     let mut last_err = None;
     for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
@@ -37,9 +44,9 @@ pub fn fetch_page_with_retry(
             if verbose {
                 eprintln!("  第 {} 次重试 ({:?})...", attempt, delay);
             }
-            std::thread::sleep(delay);
+            sleep(delay).await;
         }
-        match fetch_page(url, proxy) {
+        match fetch_page(client, url).await {
             ok @ Ok(_) => return ok,
             Err(e) => {
                 last_err = Some(e);
@@ -52,12 +59,51 @@ pub fn fetch_page_with_retry(
     Err(last_err.unwrap())
 }
 
-fn get_download_url(downpage_url: &str, proxy: Option<&str>) -> anyhow::Result<String> {
-    let resp = fetch_page(downpage_url, proxy)?;
-    let html = resp.as_str().context("读取响应失败")?;
+async fn download_zip_data(client: &Client, url: &str, verbose: bool) -> anyhow::Result<Vec<u8>> {
+    let resp = client.get(url).send().await.context("下载请求失败")?;
+    let total = resp.content_length().unwrap_or(0);
+
+    let pb = if !verbose {
+        if total > 0 {
+            let pb = ProgressBar::new(total);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .unwrap()
+                    .progress_chars("#>-"),
+            );
+            Some(pb)
+        } else {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.green} 下载中...")
+                    .unwrap(),
+            );
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            Some(pb)
+        }
+    } else {
+        None
+    };
+
+    let data = resp.bytes().await.context("读取响应数据失败")?.to_vec();
+
+    if let Some(pb) = pb {
+        if total > 0 {
+            pb.inc(total);
+        }
+        pb.finish_and_clear();
+    }
+
+    Ok(data)
+}
+
+async fn get_download_url(client: &Client, downpage_url: &str) -> anyhow::Result<String> {
+    let html = fetch_page(client, downpage_url).await?;
 
     let url_re = Regex::new(r#"downloadUrl\s*=\s*"(?<link>.+?)";"#)?;
-    match url_re.captures(html).and_then(|m| m.name("link")) {
+    match url_re.captures(&html).and_then(|m| m.name("link")) {
         Some(m) => {
             let url = m.as_str().replace("amp;", "").replace("&#038;", "");
             Ok(url)
@@ -66,15 +112,13 @@ fn get_download_url(downpage_url: &str, proxy: Option<&str>) -> anyhow::Result<S
     }
 }
 
-/// 搜索 DLL 名称，返回匹配的 DLL 文件名列表（含 `.dll` 后缀）。
-pub fn search_dll(query: &str, proxy: Option<&str>) -> anyhow::Result<Vec<String>> {
+pub async fn search_dll(client: &Client, query: &str) -> anyhow::Result<Vec<String>> {
     let url = format!("{}/search?q={}", base_url(), query);
-    let resp = fetch_page(&url, proxy)?;
-    let html = resp.as_str().context("读取搜索结果失败")?;
+    let html = fetch_page(client, &url).await?;
 
     let re = Regex::new(r#"(?i)<a\s+href="/([a-z0-9_.-]+\.html)"[^>]*>"#)?;
     let mut results: Vec<String> = Vec::new();
-    for cap in re.captures_iter(html) {
+    for cap in re.captures_iter(&html) {
         let name = cap[1].trim_end_matches(".html");
         if name.ends_with(".dll") && !results.contains(&name.to_string()) {
             results.push(name.to_string());
@@ -83,7 +127,7 @@ pub fn search_dll(query: &str, proxy: Option<&str>) -> anyhow::Result<Vec<String
 
     if results.is_empty() {
         let fallback_re = Regex::new(r#"(?i) ([a-z0-9_.-]+\.dll)"#)?;
-        for cap in fallback_re.captures_iter(html) {
+        for cap in fallback_re.captures_iter(&html) {
             let n = cap[1].to_lowercase();
             if !results.contains(&n) {
                 results.push(n);
@@ -106,7 +150,6 @@ fn format_size(bytes: usize) -> String {
     }
 }
 
-/// 单个 DLL 下载/安装的控制器。
 pub struct Dll<'a> {
     pub name: String,
     pub config: &'a Config,
@@ -117,17 +160,19 @@ impl Dll<'_> {
         Dll { name, config }
     }
 
-    pub fn process(&self) -> anyhow::Result<(bool, bool)> {
+    pub async fn process(&self) -> anyhow::Result<(bool, bool)> {
         println!("正在查询 {} 的下载信息", self.name);
         let proxy = self.config.proxy.as_deref();
         let verbose = self.config.verbose;
 
-        let resp = fetch_page_with_retry(
+        let client = build_client(proxy)?;
+
+        let html = fetch_page_with_retry(
+            &client,
             &format!("{}/{}.html", base_url(), self.name),
-            proxy,
             verbose,
-        )?;
-        let html = resp.as_str().context("读取响应失败")?;
+        )
+        .await?;
 
         if html.contains("error-404") {
             anyhow::bail!("未找到 {} 的下载页面", self.name);
@@ -142,7 +187,7 @@ impl Dll<'_> {
         let mut x32_url = String::new();
         let mut x64_url = String::new();
 
-        for section in section_re.find_iter(html).map(|m| m.as_str()) {
+        for section in section_re.find_iter(&html).map(|m| m.as_str()) {
             if !x32_url.is_empty() && !x64_url.is_empty() {
                 break;
             }
@@ -174,20 +219,34 @@ impl Dll<'_> {
             }
         }
 
-        Ok(std::thread::scope(|s| {
-            let x32 = s.spawn(|| self.install_arch(Architecture::X32, &x32_url));
-            let x64 = s.spawn(|| self.install_arch(Architecture::X64, &x64_url));
-            (x32.join().unwrap(), x64.join().unwrap())
-        }))
+        let (x32, x64) = tokio::join!(
+            self.install_arch(&client, Architecture::X32, &x32_url),
+            self.install_arch(&client, Architecture::X64, &x64_url),
+        );
+
+        let x32_ok = x32.unwrap_or_else(|e| {
+            eprintln!("  {} (x86) 失败: {}", self.name, e);
+            false
+        });
+        let x64_ok = x64.unwrap_or_else(|e| {
+            eprintln!("  {} (x64) 失败: {}", self.name, e);
+            false
+        });
+        Ok((x32_ok, x64_ok))
     }
 
-    fn install_arch(&self, arch: Architecture, page_url: &str) -> bool {
+    async fn install_arch(
+        &self,
+        client: &Client,
+        arch: Architecture,
+        page_url: &str,
+    ) -> anyhow::Result<bool> {
         let verbose = self.config.verbose;
         if page_url.is_empty() {
             if verbose {
                 println!("  未找到 {} 版本下载页面", arch.name());
             }
-            return false;
+            return Ok(false);
         }
 
         let tag = format!("{} ({})", self.name, arch.name());
@@ -195,29 +254,18 @@ impl Dll<'_> {
             println!("  下载页面: {}", page_url);
         }
 
-        let proxy = self.config.proxy.as_deref();
-        let download_url = match get_download_url(page_url, proxy) {
-            Ok(url) => url,
-            Err(e) => {
-                eprintln!("  获取 {} 下载链接失败: {}", tag, e);
-                return false;
-            }
-        };
+        let download_url = get_download_url(client, page_url)
+            .await
+            .with_context(|| format!("获取 {} 下载链接失败", tag))?;
 
         if verbose {
             println!("  真实下载地址: {}", download_url);
         }
 
         println!("  正在下载 {}", tag);
-        let resp = match fetch_page_with_retry(&download_url, proxy, verbose) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("  下载 {} 失败: {}", tag, e);
-                return false;
-            }
-        };
-
-        let data = resp.as_bytes();
+        let data = download_zip_data(client, &download_url, verbose)
+            .await
+            .with_context(|| format!("下载 {} 失败", tag))?;
         let size = data.len();
         println!("  下载完成 ({})", format_size(size));
 
@@ -233,7 +281,7 @@ impl Dll<'_> {
             && std::path::Path::new(&dest_path).exists()
         {
             println!("  {} 已存在，跳过安装", self.name);
-            return true;
+            return Ok(true);
         }
 
         if std::path::Path::new(&dest_path).exists() && self.config.force {
@@ -246,15 +294,10 @@ impl Dll<'_> {
             }
         }
 
-        match installer::extract_and_write(&self.name, data, &dest_path, verbose) {
-            Ok(_) => {
-                println!("  {} 安装成功", tag);
-                true
-            }
-            Err(e) => {
-                eprintln!("  {} 安装失败: {}", tag, e);
-                false
-            }
-        }
+        installer::extract_and_write(&self.name, &data, &dest_path, verbose)
+            .with_context(|| format!("{} 安装失败", tag))?;
+
+        println!("  {} 安装成功", tag);
+        Ok(true)
     }
 }

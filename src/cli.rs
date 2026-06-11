@@ -1,14 +1,14 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::io::{self, Write};
+use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process;
 
 pub const X32_SYSTEM_PATH: &str = r"C:\Windows\SysWOW64\";
 pub const X64_SYSTEM_PATH: &str = r"C:\Windows\System32\";
 
-/// 全局配置，由命令行参数或配置文件填充。
 #[derive(Clone, Debug)]
 pub struct Config {
     pub force: bool,
@@ -20,9 +20,10 @@ pub struct Config {
     pub proxy: Option<String>,
     pub output_dir: Option<String>,
     pub verbose: bool,
+    #[allow(dead_code)]
+    pub dll_file: Option<String>,
 }
 
-/// 目标架构（x86 = SysWOW64, x64 = System32）。
 #[derive(Clone, Copy)]
 pub enum Architecture {
     X32,
@@ -30,7 +31,6 @@ pub enum Architecture {
 }
 
 impl Architecture {
-    /// 返回架构的短名称：`"x86"` 或 `"x64"`。
     pub fn name(self) -> &'static str {
         match self {
             Architecture::X32 => "x86",
@@ -38,7 +38,6 @@ impl Architecture {
         }
     }
 
-    /// 返回该架构对应配置中的系统目录路径。
     pub fn path(self, config: &Config) -> &str {
         match self {
             Architecture::X32 => &config.syswow64_path,
@@ -84,7 +83,6 @@ impl Default for ConfigFile {
     }
 }
 
-/// 将当前配置保存到 `%APPDATA%\dll-rs\config.json`。
 pub fn save_config_file(config: &Config) -> anyhow::Result<()> {
     let path = config_file_path();
     if let Some(parent) = path.parent() {
@@ -101,7 +99,6 @@ pub fn save_config_file(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 打印帮助信息到 stderr。
 pub fn print_help() {
     eprintln!(
         r"用法: dll [选项] <name.dll> [name.dll ...]
@@ -122,6 +119,7 @@ pub fn print_help() {
       --restore [名称]   从 %%TEMP%%\dll-rs\ 恢复备份
       --proxy <地址>     使用 HTTP 代理（默认读取 HTTPS_PROXY/HTTP_PROXY 环境变量）
       --output <目录>    只下载到指定目录，不安装到系统
+      --file <路径>      从文本文件读取 DLL 名称（每行一个，# 开头为注释）
       --save-config      将当前选项保存到配置文件
 
 示例:
@@ -130,7 +128,8 @@ pub fn print_help() {
   dll --search directx
   dll --restore
   dll --restore dxgi.dll
-  dll --proxy http://127.0.0.1:8080 dxgi.dll"
+  dll --proxy http://127.0.0.1:8080 dxgi.dll
+  dll --file list.txt"
     );
 }
 
@@ -152,7 +151,28 @@ fn proxy_from_env() -> Option<String> {
     None
 }
 
-/// 交互式选择：打印带编号的列表，等待用户输入序号。
+fn read_dll_file(path: &str) -> anyhow::Result<Vec<String>> {
+    let file = fs::File::open(path).with_context(|| format!("无法打开文件: {}", path))?;
+    let reader = io::BufReader::new(file);
+    let mut names = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+        if !lower.ends_with(".dll") {
+            anyhow::bail!("文件中包含无效的 DLL 名称: {}", trimmed);
+        }
+        names.push(lower);
+    }
+    if names.is_empty() {
+        anyhow::bail!("文件中未找到有效的 DLL 名称");
+    }
+    Ok(names)
+}
+
 pub fn select_interactive(items: &[String], prompt: &str) -> anyhow::Result<String> {
     for (i, item) in items.iter().enumerate() {
         println!("  {}. {}", i + 1, item);
@@ -171,7 +191,6 @@ pub fn select_interactive(items: &[String], prompt: &str) -> anyhow::Result<Stri
     Ok(items[idx - 1].clone())
 }
 
-/// 从原始参数切片解析配置（测试用 inject 版本）。
 pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     let cf = load_config_file();
 
@@ -203,6 +222,7 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     let mut output_dir = None;
     let mut verbose = false;
     let mut save_config = false;
+    let mut dll_file = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -257,6 +277,13 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
                 }
                 _ => restore_name = Some(String::new()),
             },
+            "--file" => {
+                i += 1;
+                let path = args.get(i).context("--file 需要文件路径")?.clone();
+                let file_names = read_dll_file(&path)?;
+                dll_names.extend(file_names);
+                dll_file = Some(path);
+            }
             s if s.starts_with('-') => anyhow::bail!("未知选项: {}", s),
             name => {
                 let lower = name.to_lowercase();
@@ -284,6 +311,7 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
         proxy,
         output_dir,
         verbose,
+        dll_file,
     };
 
     if save_config {
@@ -294,7 +322,6 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     Ok(config)
 }
 
-/// 从 `env::args()` 解析配置（入口版本）。
 pub fn parse_args() -> anyhow::Result<Config> {
     let args: Vec<String> = env::args().collect();
     parse_args_from(&args)

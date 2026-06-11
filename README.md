@@ -29,15 +29,16 @@ dll dxgi.dll
 
 | 选项 | 说明 |
 |------|------|
-| `-f` / `--force` | 覆盖已存在的文件，原文件自动备份到 `%TEMP%\dll-rs\` |
+| `-f` / `--force` | 覆盖已存在的文件，自动备份到 `%TEMP%\dll-rs\` |
 | `-h` / `--help` | 显示帮助信息 |
 | `-V` / `--version` | 显示版本号 |
-| `-v` / `--verbose` | 显示详细日志（URL、重试信息、ZIP 条目等） |
+| `-v` / `--verbose` | 显示详细日志 |
 | `<name.dll>...` | 支持同时指定多个 DLL |
+| `--file <路径>` | 从文本文件读取 DLL 名称（每行一个，`#` 开头为注释） |
 
 ```powershell
 dll -f dxgi.dll d3dcompiler.dll
-dll -v dxgi.dll
+dll --file list.txt
 ```
 
 ### 安装目录
@@ -83,43 +84,11 @@ dll --restore dxgi.dll     # 按名称筛选，单个直接恢复
 dll --save-config --system32 D:\dlls --proxy http://proxy:8080
 ```
 
-## 工作原理
-
-1. 请求 `https://cn.dll-files.com/<name>.html`，解析 x32/x64 的下载页面链接。
-2. 访问下载页面，从嵌入的 JavaScript 中提取真实 ZIP 下载地址。
-3. 下载 ZIP 压缩包，解压出 `.dll` 文件（失败自动重试最多 3 次）。
-4. 校验 PE 头（`MZ` 魔数），确保文件有效，否则自动清理。
-5. 写入对应系统目录（或 `--output` 指定目录）。
-
-x32 和 x64 安装相互独立——即使某个架构找不到，另一个仍会正常安装。
-
 ## 测试
 
 ```powershell
 cargo test
 ```
-
-包含 **39 个测试**，覆盖：
-
-- 参数解析（单 DLL、多 DLL、全部标志）
-- `Architecture` 枚举
-- PE 文件校验
-- 备份/恢复 roundtrip 和筛选
-- ZIP 提取和 PE 验证
-- 模拟 HTTP 集成测试（mockito）
-- CLI 快照测试（参数解析边界情况）
-
-## 工程结构
-
-```
-src/
-  main.rs      入口点、恢复流程、所有测试
-  cli.rs       参数解析、Config、配置文件
-  scraper.rs   HTTP 请求（重试+代理）、HTML 抓取、搜索
-  installer.rs ZIP 解压、PE 校验、备份/恢复
-```
-
-- 使用 `minreq`（HTTPS + 代理）、`regex`、`zip`、`serde` / `serde_json`
 
 ## 许可证
 

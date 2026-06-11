@@ -1,8 +1,8 @@
 mod cli;
+mod error;
 mod installer;
 mod scraper;
 
-/// 备份恢复流程：列出备份 → 交互选择（如有多个）→ 恢复。
 fn restore_flow(filter: &str) -> anyhow::Result<()> {
     let filter_opt = if filter.is_empty() {
         None
@@ -29,7 +29,8 @@ fn restore_flow(filter: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let config = cli::parse_args()?;
 
     if let Some(ref filter) = config.restore_name {
@@ -37,7 +38,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Some(ref term) = config.search_term {
-        let results = scraper::search_dll(term, config.proxy.as_deref())?;
+        let client = scraper::build_client(config.proxy.as_deref())?;
+        let results = scraper::search_dll(&client, term).await?;
         let selected = if results.len() == 1 {
             println!("找到: {}", results[0]);
             results[0].clone()
@@ -52,7 +54,7 @@ fn main() -> anyhow::Result<()> {
         for name in &names {
             println!("━━━ {} ━━━", name);
             let dll = scraper::Dll::new(name.clone(), &config);
-            match dll.process() {
+            match dll.process().await {
                 Ok((x32_ok, x64_ok)) => {
                     let status = match (x32_ok, x64_ok) {
                         (true, true) => "全部成功",
@@ -72,7 +74,7 @@ fn main() -> anyhow::Result<()> {
     for name in &config.dll_names {
         println!("━━━ {} ━━━", name);
         let dll = scraper::Dll::new(name.clone(), &config);
-        match dll.process() {
+        match dll.process().await {
             Ok((x32_ok, x64_ok)) => {
                 let status = match (x32_ok, x64_ok) {
                     (true, true) => "全部成功",
@@ -260,6 +262,61 @@ mod tests {
         assert!(cfg.verbose);
     }
 
+    #[test]
+    fn parse_file_flag() {
+        let dir = std::env::temp_dir().join("dll-rs-test-file-flag");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("list.txt");
+        std::fs::write(
+            &path,
+            b"dxgi.dll\n# comment\nd3dcompiler.dll\n\nother.dll\n",
+        )
+        .unwrap();
+        let args = &[
+            "dll".to_string(),
+            "--file".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let cfg = cli::parse_args_from(args).unwrap();
+        assert_eq!(
+            cfg.dll_names,
+            vec!["dxgi.dll", "d3dcompiler.dll", "other.dll"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_file_flag_combined_with_inline() {
+        let dir = std::env::temp_dir().join("dll-rs-test-file-combined");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("more.txt");
+        std::fs::write(&path, b"extra.dll\n").unwrap();
+        let args = &[
+            "dll".to_string(),
+            "base.dll".to_string(),
+            "--file".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let cfg = cli::parse_args_from(args).unwrap();
+        assert_eq!(cfg.dll_names, vec!["base.dll", "extra.dll"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_file_flag_invalid_name() {
+        let dir = std::env::temp_dir().join("dll-rs-test-file-invalid");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("bad.txt");
+        std::fs::write(&path, b"not_a_dll.txt\n").unwrap();
+        let args = &[
+            "dll".to_string(),
+            "--file".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        assert!(cli::parse_args_from(args).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ---- Architecture ----
 
     #[test]
@@ -284,6 +341,7 @@ mod tests {
             proxy: None,
             output_dir: None,
             verbose: false,
+            dll_file: None,
         };
         assert_eq!(Architecture::X32.path(&cfg), r"C:\Windows\SysWOW64\");
     }
@@ -300,6 +358,7 @@ mod tests {
             proxy: None,
             output_dir: None,
             verbose: false,
+            dll_file: None,
         };
         assert_eq!(Architecture::X64.path(&cfg), r"C:\Windows\System32\");
     }
@@ -516,7 +575,6 @@ mod tests {
         let mut server = mockito::Server::new();
         let base = server.url();
 
-        let _dl_page_url = format!("{}/dl-page", base);
         let zip_url = format!("{}/dl.zip", base);
 
         let dl_page_html = format!(r#"<script>downloadUrl = "{}";</script>"#, zip_url);
@@ -569,10 +627,12 @@ mod tests {
             proxy: None,
             output_dir: None,
             verbose: false,
+            dll_file: None,
         };
 
         let dll = scraper::Dll::new("dxgi.dll".to_string(), &config);
-        let result = dll.process();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(dll.process());
 
         std::env::remove_var("DLL_RS_BASE_URL");
 
@@ -601,7 +661,9 @@ mod tests {
             .create();
 
         std::env::set_var("DLL_RS_BASE_URL", &base);
-        let results = scraper::search_dll("dxgi", None).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = rt.block_on(async { scraper::build_client(None).unwrap() });
+        let results = rt.block_on(scraper::search_dll(&client, "dxgi")).unwrap();
         std::env::remove_var("DLL_RS_BASE_URL");
 
         assert!(results.contains(&"dxgi.dll".to_string()));
@@ -623,7 +685,11 @@ mod tests {
             .create();
 
         std::env::set_var("DLL_RS_BASE_URL", &base);
-        let results = scraper::search_dll("nonexistent", None).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = rt.block_on(async { scraper::build_client(None).unwrap() });
+        let results = rt
+            .block_on(scraper::search_dll(&client, "nonexistent"))
+            .unwrap();
         std::env::remove_var("DLL_RS_BASE_URL");
 
         assert!(results.is_empty());
