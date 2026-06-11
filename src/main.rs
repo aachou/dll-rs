@@ -22,8 +22,28 @@ struct Config {
     dll_names: Vec<String>,
 }
 
+fn print_help() {
+    eprintln!(
+        r"用法: dll [选项] <name.dll> [name.dll ...]
+
+安装缺失的 DLL 文件到系统目录。
+
+参数:
+  <name.dll>...        要安装的 DLL 文件名（至少一个）
+
+选项:
+  -f, --force           强制覆盖已存在的文件
+  -h, --help            显示此帮助信息
+
+示例:
+  dll dxgi.dll
+  dll -f dxgi.dll d3dcompiler.dll"
+    );
+}
+
 fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     if args.len() < 2 {
+        print_help();
         anyhow::bail!("用法: dll [选项] <name.dll> [name.dll ...]");
     }
 
@@ -34,6 +54,10 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     while i < args.len() {
         match args[i].as_str() {
             "-f" | "--force" => force = true,
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
             s if s.starts_with('-') => anyhow::bail!("未知选项: {}", s),
             name => {
                 let lower = name.to_lowercase();
@@ -47,6 +71,7 @@ fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     }
 
     if dll_names.is_empty() {
+        print_help();
         anyhow::bail!("未指定 DLL 文件名");
     }
 
