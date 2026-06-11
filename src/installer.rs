@@ -4,6 +4,7 @@ use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 use zip::read::ZipArchive;
 
+/// 检查文件是否为有效的 PE 格式（以 `MZ` 魔数字节开头）。
 pub fn is_valid_pe(path: &str) -> bool {
     let mut buf = [0u8; 2];
     if let Ok(mut f) = File::open(path) {
@@ -14,10 +15,12 @@ pub fn is_valid_pe(path: &str) -> bool {
     false
 }
 
+/// `%TEMP%\dll-rs` 备份目录路径。
 pub fn backup_dir() -> PathBuf {
     std::env::temp_dir().join("dll-rs")
 }
 
+/// 为原始路径生成备份路径（`%TEMP%\dll-rs\<sanitized>.bak`）。
 pub fn backup_path(original: &str) -> anyhow::Result<PathBuf> {
     let dir = backup_dir();
     std::fs::create_dir_all(&dir).context("创建备份目录失败")?;
@@ -25,6 +28,7 @@ pub fn backup_path(original: &str) -> anyhow::Result<PathBuf> {
     Ok(dir.join(format!("{}.bak", safe)))
 }
 
+/// 将备份文件名（如 `C_Windows_System32_dxgi.dll.bak`）还原为原始路径。
 pub fn parse_backup_name(filename: &str) -> Option<String> {
     let s = filename.strip_suffix(".bak")?;
     let parts: Vec<&str> = s.split('_').collect();
@@ -38,10 +42,12 @@ pub fn parse_backup_name(filename: &str) -> Option<String> {
     Some(result)
 }
 
+/// 列出所有备份（按原始路径排序），可选按名称筛选。
 pub fn list_backups(filter: Option<&str>) -> anyhow::Result<Vec<(String, PathBuf)>> {
     list_backups_from_dir(&backup_dir(), filter)
 }
 
+/// 从指定目录列出备份（测试用，`list_backups` 的底层实现）。
 pub fn list_backups_from_dir(
     dir: &Path,
     filter: Option<&str>,
@@ -72,6 +78,7 @@ pub fn list_backups_from_dir(
     Ok(entries)
 }
 
+/// 从备份路径恢复到原始位置（移动操作）。
 pub fn restore_dll(backup_path: &Path, original_path: &str) -> anyhow::Result<()> {
     if let Some(parent) = Path::new(original_path).parent() {
         std::fs::create_dir_all(parent).context("创建目标目录失败")?;
@@ -81,6 +88,7 @@ pub fn restore_dll(backup_path: &Path, original_path: &str) -> anyhow::Result<()
     Ok(())
 }
 
+/// 从 ZIP 数据中提取与 `dll_name` 匹配的 DLL，校验 PE 后写入 `dest_path`。
 pub fn extract_and_write(
     dll_name: &str,
     zip_data: &[u8],

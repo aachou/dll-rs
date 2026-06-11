@@ -2,6 +2,7 @@ mod cli;
 mod installer;
 mod scraper;
 
+/// 备份恢复流程：列出备份 → 交互选择（如有多个）→ 恢复。
 fn restore_flow(filter: &str) -> anyhow::Result<()> {
     let filter_opt = if filter.is_empty() { None } else { Some(filter) };
     let entries = installer::list_backups(filter_opt)?;
@@ -90,6 +91,9 @@ mod tests {
     use crate::cli::{self, Architecture, Config};
     use crate::installer;
     use std::io::Write;
+    use std::sync::Mutex;
+    use crate::scraper;
+    static MOCK_LOCK: Mutex<()> = Mutex::new(());
 
     // ---- parse_args_from ----
 
@@ -450,5 +454,158 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Version ----
+
+    #[test]
+    fn version_string_is_not_empty() {
+        assert!(!env!("CARGO_PKG_VERSION").is_empty());
+    }
+
+    // ---- CLI arg error snapshots ----
+
+    #[test]
+    fn error_no_dll_extension() {
+        let args = &["dll".to_string(), "foo".to_string()];
+        let err = cli::parse_args_from(args).unwrap_err().to_string();
+        assert!(err.contains(".dll"));
+    }
+
+    #[test]
+    fn error_unknown_flag() {
+        let args = &["dll".to_string(), "--bogus".to_string(), "x.dll".to_string()];
+        let err = cli::parse_args_from(args).unwrap_err().to_string();
+        assert!(err.contains("未知选项"));
+    }
+
+    #[test]
+    fn error_system32_missing_arg() {
+        let args = &["dll".to_string(), "--system32".to_string(), "x.dll".to_string()];
+        assert!(cli::parse_args_from(args).is_err());
+    }
+
+    // ---- Mock HTTP integration ----
+
+    #[test]
+    fn mock_full_install_flow_x64_only() {
+        let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        let _dl_page_url = format!("{}/dl-page", base);
+        let zip_url = format!("{}/dl.zip", base);
+
+        let dl_page_html = format!(
+            r#"<script>downloadUrl = "{}";</script>"#,
+            zip_url
+        );
+
+        let page_html = format!(
+            r#"<!DOCTYPE html>
+<section class="file-info-grid">
+  <div class="right-pane">
+    <p>Version</p>
+    <p>64</p>
+    <a href="/dl-page" data-ga-action>Download x64</a>
+  </div>
+</section>"#
+        );
+
+        let _m1 = server
+            .mock("GET", "/dxgi.dll.html")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(&page_html)
+            .create();
+
+        let _m2 = server
+            .mock("GET", "/dl-page")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(&dl_page_html)
+            .create();
+
+        let zip_data = create_dummy_zip("dxgi.dll", b"MZ\x90\x00\x00\x00");
+        let _m3 = server
+            .mock("GET", "/dl.zip")
+            .with_status(200)
+            .with_header("content-type", "application/zip")
+            .with_body(&zip_data)
+            .create();
+
+        std::env::set_var("DLL_RS_BASE_URL", &base);
+
+        let out_dir = std::env::temp_dir().join("dll-rs-integration-test");
+        let _ = std::fs::create_dir_all(&out_dir);
+
+        let config = cli::Config {
+            force: true,
+            system32_path: format!(r"{}\", out_dir.to_string_lossy()),
+            syswow64_path: format!(r"{}\", out_dir.to_string_lossy()),
+            dll_names: vec!["dxgi.dll".to_string()],
+            restore_name: None,
+            search_term: None,
+            proxy: None,
+            output_dir: None,
+            verbose: false,
+        };
+
+        let dll = scraper::Dll::new("dxgi.dll".to_string(), &config);
+        let result = dll.process();
+
+        std::env::remove_var("DLL_RS_BASE_URL");
+
+        assert!(result.is_ok(), "process failed: {:?}", result.err());
+        let installed = out_dir.join("dxgi.dll");
+        assert!(installed.exists(), "DLL was not installed");
+
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn mock_search_returns_results() {
+        let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        let search_html = r#"<a href="/dxgi.dll.html">dxgi.dll</a><a href="/d3d11.dll.html">d3d11.dll</a>"#;
+
+        let _m = server
+            .mock("GET", "/search?q=dxgi")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(search_html)
+            .create();
+
+        std::env::set_var("DLL_RS_BASE_URL", &base);
+        let results = scraper::search_dll("dxgi", None).unwrap();
+        std::env::remove_var("DLL_RS_BASE_URL");
+
+        assert!(results.contains(&"dxgi.dll".to_string()));
+        assert!(results.contains(&"d3d11.dll".to_string()));
+    }
+
+    #[test]
+    fn mock_search_no_results() {
+        let _guard = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut server = mockito::Server::new();
+        let base = server.url();
+
+        let _m = server
+            .mock("GET", "/search?q=nonexistent")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body("<html>nothing here</html>")
+            .create();
+
+        std::env::set_var("DLL_RS_BASE_URL", &base);
+        let results = scraper::search_dll("nonexistent", None).unwrap();
+        std::env::remove_var("DLL_RS_BASE_URL");
+
+        assert!(results.is_empty());
     }
 }

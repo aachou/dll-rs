@@ -5,12 +5,15 @@ use std::time::Duration;
 use crate::cli::{Architecture, Config};
 use crate::installer;
 
-const BASE_URL: &str = "https://cn.dll-files.com";
-const USER_AGENT: &str =
+fn base_url() -> String {
+    std::env::var("DLL_RS_BASE_URL")
+        .unwrap_or_else(|_| "https://cn.dll-files.com".to_string())
+}const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) dll-rs/0.2.0";
 const TIMEOUT_SECS: u64 = 30;
 const MAX_RETRIES: u32 = 3;
 
+/// 发送 HTTP GET 请求（无重试）。
 pub fn fetch_page(url: &str, proxy: Option<&str>) -> anyhow::Result<minreq::Response> {
     let mut req = minreq::get(url)
         .with_header("User-Agent", USER_AGENT)
@@ -21,6 +24,7 @@ pub fn fetch_page(url: &str, proxy: Option<&str>) -> anyhow::Result<minreq::Resp
     req.send().context("发送请求失败")
 }
 
+/// 带指数退避重试（最多 3 次）的 HTTP GET。
 pub fn fetch_page_with_retry(
     url: &str,
     proxy: Option<&str>,
@@ -62,8 +66,9 @@ fn get_download_url(downpage_url: &str, proxy: Option<&str>) -> anyhow::Result<S
     }
 }
 
+/// 搜索 DLL 名称，返回匹配的 DLL 文件名列表（含 `.dll` 后缀）。
 pub fn search_dll(query: &str, proxy: Option<&str>) -> anyhow::Result<Vec<String>> {
-    let url = format!("{}/search?q={}", BASE_URL, query);
+    let url = format!("{}/search?q={}", base_url(), query);
     let resp = fetch_page(&url, proxy)?;
     let html = resp.as_str().context("读取搜索结果失败")?;
 
@@ -101,6 +106,7 @@ fn format_size(bytes: usize) -> String {
     }
 }
 
+/// 单个 DLL 下载/安装的控制器。
 pub struct Dll<'a> {
     pub name: String,
     pub config: &'a Config,
@@ -117,7 +123,7 @@ impl Dll<'_> {
         let verbose = self.config.verbose;
 
         let resp = fetch_page_with_retry(
-            &format!("{}/{}.html", BASE_URL, self.name),
+            &format!("{}/{}.html", base_url(), self.name),
             proxy,
             verbose,
         )?;
@@ -160,7 +166,7 @@ impl Dll<'_> {
                 Some(m) => m.as_str(),
                 None => continue,
             };
-            let full_url = format!("{}{}", BASE_URL, link);
+            let full_url = format!("{}{}", base_url(), link);
             match arch {
                 "32" => x32_url = full_url,
                 "64" => x64_url = full_url,

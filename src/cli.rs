@@ -8,7 +8,8 @@ use std::process;
 pub const X32_SYSTEM_PATH: &str = r"C:\Windows\SysWOW64\";
 pub const X64_SYSTEM_PATH: &str = r"C:\Windows\System32\";
 
-#[derive(Clone)]
+/// 全局配置，由命令行参数或配置文件填充。
+#[derive(Clone, Debug)]
 pub struct Config {
     pub force: bool,
     pub system32_path: String,
@@ -21,6 +22,7 @@ pub struct Config {
     pub verbose: bool,
 }
 
+/// 目标架构（x86 = SysWOW64, x64 = System32）。
 #[derive(Clone, Copy)]
 pub enum Architecture {
     X32,
@@ -28,6 +30,7 @@ pub enum Architecture {
 }
 
 impl Architecture {
+    /// 返回架构的短名称：`"x86"` 或 `"x64"`。
     pub fn name(self) -> &'static str {
         match self {
             Architecture::X32 => "x86",
@@ -35,6 +38,7 @@ impl Architecture {
         }
     }
 
+    /// 返回该架构对应配置中的系统目录路径。
     pub fn path(self, config: &Config) -> &str {
         match self {
             Architecture::X32 => &config.syswow64_path,
@@ -80,6 +84,7 @@ impl Default for ConfigFile {
     }
 }
 
+/// 将当前配置保存到 `%APPDATA%\dll-rs\config.json`。
 pub fn save_config_file(config: &Config) -> anyhow::Result<()> {
     let path = config_file_path();
     if let Some(parent) = path.parent() {
@@ -96,6 +101,7 @@ pub fn save_config_file(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 打印帮助信息到 stderr。
 pub fn print_help() {
     eprintln!(
         r"用法: dll [选项] <name.dll> [name.dll ...]
@@ -108,6 +114,7 @@ pub fn print_help() {
 选项:
   -f, --force           强制覆盖已存在的文件（自动备份到 %%TEMP%%\dll-rs\）
   -h, --help            显示此帮助信息
+  -V, --version         显示版本号
   -v, --verbose         显示详细日志
       --system32 <路径>  自定义 x64 系统目录（默认: C:\Windows\System32\）
       --syswow64 <路径>  自定义 x86 系统目录（默认: C:\Windows\SysWOW64\）
@@ -138,6 +145,7 @@ fn proxy_from_env() -> Option<String> {
     None
 }
 
+/// 交互式选择：打印带编号的列表，等待用户输入序号。
 pub fn select_interactive(items: &[String], prompt: &str) -> anyhow::Result<String> {
     for (i, item) in items.iter().enumerate() {
         println!("  {}. {}", i + 1, item);
@@ -156,6 +164,7 @@ pub fn select_interactive(items: &[String], prompt: &str) -> anyhow::Result<Stri
     Ok(items[idx - 1].clone())
 }
 
+/// 从原始参数切片解析配置（测试用 inject 版本）。
 pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     let cf = load_config_file();
 
@@ -196,6 +205,10 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
             "-f" | "--force" => force = true,
             "-h" | "--help" => {
                 print_help();
+                process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("dll {}", env!("CARGO_PKG_VERSION"));
                 process::exit(0);
             }
             "-v" | "--verbose" => verbose = true,
@@ -280,6 +293,7 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
     Ok(config)
 }
 
+/// 从 `env::args()` 解析配置（入口版本）。
 pub fn parse_args() -> anyhow::Result<Config> {
     let args: Vec<String> = env::args().collect();
     parse_args_from(&args)
