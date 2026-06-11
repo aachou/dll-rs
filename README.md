@@ -31,16 +31,29 @@ cargo build --release
 dll dxgi.dll
 ```
 
-参数**必须以 `.dll` 结尾**。工具会自动查找并安装 32 位和 64 位两个版本到对应的系统目录。如果 DLL 已存在则跳过。
+支持多个 DLL 同时安装：
+
+```powershell
+dll dxgi.dll d3dcompiler.dll d3dx9.dll
+```
+
+使用 `--force`（或 `-f`）强制覆盖已存在的文件：
+
+```powershell
+dll -f dxgi.dll d3dcompiler.dll
+```
+
+参数**必须以 `.dll` 结尾**。工具会自动查找并安装 32 位和 64 位两个版本到对应的系统目录。如果 DLL 已存在则跳过（除非指定 `-f`）。
 
 ## 工作原理
 
 1. 请求 `https://cn.dll-files.com/<name>.html`，解析各架构的下载页面链接。
 2. 访问下载页面，从嵌入的 JavaScript 中提取真实下载地址。
 3. 下载 ZIP 压缩包，解压出 `.dll` 文件。
-4. 写入 `C:\Windows\System32\`（x64）和 `C:\Windows\SysWOW64\`（x32）。
+4. 校验 PE 头（`MZ` 魔数），确保文件有效。
+5. 写入 `C:\Windows\System32\`（x64）和 `C:\Windows\SysWOW64\`（x32）。
 
-x32 和 x64 安装相互独立——即使某个架构在页面上找不到，另一个架构仍会正常安装。
+x32 和 x64 安装相互独立——即使某个架构在页面上找不到，另一个架构仍会正常安装。两个版本会**并行下载**以加快速度。
 
 ## 许可证
 
