@@ -108,7 +108,11 @@ pub fn extract_and_write(
         if !file.name().ends_with(".dll") {
             continue;
         }
-        if !file.name().to_lowercase().ends_with(&dll_name.to_lowercase()) {
+        if !file
+            .name()
+            .to_lowercase()
+            .ends_with(&dll_name.to_lowercase())
+        {
             if verbose {
                 println!("  跳过 ZIP 条目: {}", file.name());
             }

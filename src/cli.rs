@@ -135,7 +135,14 @@ pub fn print_help() {
 }
 
 fn proxy_from_env() -> Option<String> {
-    for key in &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+    for key in &[
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
         if let Ok(val) = env::var(key) {
             if !val.is_empty() {
                 return Some(val);
@@ -243,11 +250,7 @@ pub fn parse_args_from(args: &[String]) -> anyhow::Result<Config> {
             }
             "--search" => {
                 i += 1;
-                search_term = Some(
-                    args.get(i)
-                        .context("--search 需要搜索关键词")?
-                        .clone(),
-                );
+                search_term = Some(args.get(i).context("--search 需要搜索关键词")?.clone());
             }
             "--restore" => match args.get(i + 1) {
                 Some(n) if !n.starts_with('-') => {

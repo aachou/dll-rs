@@ -12,12 +12,6 @@
 ## 安装
 
 ```powershell
-cargo install dll
-```
-
-或从源码构建：
-
-```powershell
 git clone https://github.com/aachou/dll-rs.git
 cd dll-rs
 cargo build --release

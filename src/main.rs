@@ -4,7 +4,11 @@ mod scraper;
 
 /// 备份恢复流程：列出备份 → 交互选择（如有多个）→ 恢复。
 fn restore_flow(filter: &str) -> anyhow::Result<()> {
-    let filter_opt = if filter.is_empty() { None } else { Some(filter) };
+    let filter_opt = if filter.is_empty() {
+        None
+    } else {
+        Some(filter)
+    };
     let entries = installer::list_backups(filter_opt)?;
 
     if entries.is_empty() {
@@ -90,9 +94,9 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use crate::cli::{self, Architecture, Config};
     use crate::installer;
+    use crate::scraper;
     use std::io::Write;
     use std::sync::Mutex;
-    use crate::scraper;
     static MOCK_LOCK: Mutex<()> = Mutex::new(());
 
     // ---- parse_args_from ----
@@ -151,7 +155,11 @@ mod tests {
 
     #[test]
     fn parse_unknown_flag() {
-        let args = &["dll".to_string(), "--unknown".to_string(), "dxgi.dll".to_string()];
+        let args = &[
+            "dll".to_string(),
+            "--unknown".to_string(),
+            "dxgi.dll".to_string(),
+        ];
         assert!(cli::parse_args_from(args).is_err());
     }
 
@@ -200,7 +208,11 @@ mod tests {
 
     #[test]
     fn parse_system32_flag_missing_arg() {
-        let args = &["dll".to_string(), "--system32".to_string(), "dxgi.dll".to_string()];
+        let args = &[
+            "dll".to_string(),
+            "--system32".to_string(),
+            "dxgi.dll".to_string(),
+        ];
         assert!(cli::parse_args_from(args).is_err());
     }
 
@@ -299,7 +311,11 @@ mod tests {
         let dir = std::env::temp_dir().join("dll-rs-test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test.dll");
-        std::fs::write(&path, b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00").unwrap();
+        std::fs::write(
+            &path,
+            b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00",
+        )
+        .unwrap();
         assert!(installer::is_valid_pe(path.to_str().unwrap()));
         let _ = std::fs::remove_file(&path);
     }
@@ -449,9 +465,7 @@ mod tests {
         let dest = dir.join("other.dll").to_string_lossy().to_string();
         let zip_data = create_dummy_zip("something_else.dll", b"MZ\x90\x00");
 
-        assert!(
-            installer::extract_and_write("other.dll", &zip_data, &dest, false).is_err()
-        );
+        assert!(installer::extract_and_write("other.dll", &zip_data, &dest, false).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -474,14 +488,22 @@ mod tests {
 
     #[test]
     fn error_unknown_flag() {
-        let args = &["dll".to_string(), "--bogus".to_string(), "x.dll".to_string()];
+        let args = &[
+            "dll".to_string(),
+            "--bogus".to_string(),
+            "x.dll".to_string(),
+        ];
         let err = cli::parse_args_from(args).unwrap_err().to_string();
         assert!(err.contains("未知选项"));
     }
 
     #[test]
     fn error_system32_missing_arg() {
-        let args = &["dll".to_string(), "--system32".to_string(), "x.dll".to_string()];
+        let args = &[
+            "dll".to_string(),
+            "--system32".to_string(),
+            "x.dll".to_string(),
+        ];
         assert!(cli::parse_args_from(args).is_err());
     }
 
@@ -497,10 +519,7 @@ mod tests {
         let _dl_page_url = format!("{}/dl-page", base);
         let zip_url = format!("{}/dl.zip", base);
 
-        let dl_page_html = format!(
-            r#"<script>downloadUrl = "{}";</script>"#,
-            zip_url
-        );
+        let dl_page_html = format!(r#"<script>downloadUrl = "{}";</script>"#, zip_url);
 
         let page_html = format!(
             r#"<!DOCTYPE html>
@@ -571,7 +590,8 @@ mod tests {
         let mut server = mockito::Server::new();
         let base = server.url();
 
-        let search_html = r#"<a href="/dxgi.dll.html">dxgi.dll</a><a href="/d3d11.dll.html">d3d11.dll</a>"#;
+        let search_html =
+            r#"<a href="/dxgi.dll.html">dxgi.dll</a><a href="/d3d11.dll.html">d3d11.dll</a>"#;
 
         let _m = server
             .mock("GET", "/search?q=dxgi")

@@ -6,9 +6,9 @@ use crate::cli::{Architecture, Config};
 use crate::installer;
 
 fn base_url() -> String {
-    std::env::var("DLL_RS_BASE_URL")
-        .unwrap_or_else(|_| "https://cn.dll-files.com".to_string())
-}const USER_AGENT: &str =
+    std::env::var("DLL_RS_BASE_URL").unwrap_or_else(|_| "https://cn.dll-files.com".to_string())
+}
+const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) dll-rs/0.2.0";
 const TIMEOUT_SECS: u64 = 30;
 const MAX_RETRIES: u32 = 3;
